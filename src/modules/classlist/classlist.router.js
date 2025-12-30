@@ -23,4 +23,4 @@ export default router;
 
 
 //<--- protect the route
-router.get("/",protect, asyncHandler(getAllClassList));  
+//router.get("/",protect, asyncHandler(getAllClassList));  

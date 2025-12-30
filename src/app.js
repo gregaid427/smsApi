@@ -6,10 +6,18 @@ import requestLogger from "./utils/requestLogger.js";
 //import { fileURLToPath } from "url";
 
 import classListRouter  from "./modules/classlist/classlist.router.js";
+import sectionRouter  from "./modules/section/section.router.js";
+import classRouter  from "./modules/class/class.router.js";
+import StudentRouter  from "./modules/student/student.router.js";
+
+import subjectRouter  from "./modules/subject/subject.router.js";
+import studentCartegoryRouter  from "./modules/studentcartegory/cartegory.router.js";
+
+
+
 import auth  from "./modules/auth/auth.router.js";
 
-// import section from "./modules/section";
-// import classes from "./modules/class.js";
+
 import errorHandler from "./middleware/errorHandler.js"; // FIXED
 
 //const __filename = fileURLToPath(import.meta.url);
@@ -44,8 +52,13 @@ process.on("uncaughtException", (err) => {
 app.use("/api/auth", auth );
 
 app.use("/api/classlist", classListRouter );
-// app.use("/api/section", section);
-// app.use("/api/class", classes);
+app.use("/api/section", sectionRouter);
+app.use("/api/class", classRouter);
+app.use("/api/students", StudentRouter);
+app.use("/api/subject", subjectRouter);
+app.use("/api/student-category", studentCartegoryRouter);
+
+
 
 // must be LAST
 app.use(errorHandler);

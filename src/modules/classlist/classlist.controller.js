@@ -3,7 +3,6 @@ import AppError from "../../utils/AppError.js";
 import { generateId } from "../../utils/idGenerator.js";
 import { generateColor } from "../../utils/colorGenerator.js";
 
-
 /* ============================================================
    HELPER: GENERATE UNIQUE 6-CHAR ID
 ============================================================ */
@@ -24,7 +23,18 @@ const generateUniqueId = async () => {
 };
 
 /* ============================================================
+   FETCH ALL CLASSLISTS (GLOBAL SNAPSHOT)
+============================================================ */
+const fetchAllClassLists = async () => {
+  const [classLists] = await pool.query(
+    "SELECT * FROM classList ORDER BY createdAt DESC"
+  );
+  return classLists; // <-- just the array for "data"
+};
+
+/* ============================================================
    CREATE CLASS LIST
+   POST /
 ============================================================ */
 export const createClassList = async (req, res) => {
   const { className, createdBy } = req.body;
@@ -51,26 +61,34 @@ export const createClassList = async (req, res) => {
     [id, className, classColor, createdBy]
   );
 
+  const data = await fetchAllClassLists();
+
   res.status(201).json({
     success: 1,
-    message: "Class created",
-    data: { id, className, classColor },
+    message: "Class created successfully",
+    info: { id, className, classColor },
+    data
   });
 };
 
 /* ============================================================
    GET ALL CLASS LISTS
+   GET /
 ============================================================ */
 export const getAllClassList = async (req, res) => {
-  const [rows] = await pool.query(
-    "SELECT * FROM classList ORDER BY createdAt DESC"
-  );
+  const data = await fetchAllClassLists();
 
-  res.status(200).json({ success: 1, data: rows });
+  res.status(200).json({
+    success: 1,
+    message: "All class lists fetched",
+    info: null,
+    data
+  });
 };
 
 /* ============================================================
    GET SINGLE CLASS LIST
+   GET /:id
 ============================================================ */
 export const getClassListById = async (req, res) => {
   const [rows] = await pool.query(
@@ -82,11 +100,19 @@ export const getClassListById = async (req, res) => {
     throw new AppError("Class not found", 404);
   }
 
-  res.status(200).json({ success: 1, data: rows[0] });
+  const data = await fetchAllClassLists();
+
+  res.status(200).json({
+    success: 1,
+    message: "Class fetched",
+    info: rows[0],
+    data
+  });
 };
 
 /* ============================================================
    UPDATE CLASS LIST
+   PATCH /:id
 ============================================================ */
 export const updateClassList = async (req, res) => {
   const { className } = req.body;
@@ -104,11 +130,19 @@ export const updateClassList = async (req, res) => {
     throw new AppError("Class not found", 404);
   }
 
-  res.status(200).json({ success: 1, message: "Class updated" });
+  const data = await fetchAllClassLists();
+
+  res.status(200).json({
+    success: 1,
+    message: "Class updated successfully",
+    info: { id: req.params.id, className },
+    data
+  });
 };
 
 /* ============================================================
    DELETE CLASS LIST
+   DELETE /:id
 ============================================================ */
 export const deleteClassList = async (req, res) => {
   const [result] = await pool.query(
@@ -120,5 +154,12 @@ export const deleteClassList = async (req, res) => {
     throw new AppError("Class not found", 404);
   }
 
-  res.status(200).json({ success: 1, message: "Class deleted" });
+  const data = await fetchAllClassLists();
+
+  res.status(200).json({
+    success: 1,
+    message: "Class deleted successfully",
+    info: { id: req.params.id },
+    data
+  });
 };
