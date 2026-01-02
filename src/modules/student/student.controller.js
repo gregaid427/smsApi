@@ -2,7 +2,8 @@ import pool from "../../config/db.js";
 import AppError from "../../utils/AppError.js";
 import path from "path";
 import fs from "fs";
-
+import dotenv from "dotenv";
+dotenv.config();
 /* ============================================================
    HELPER: Generate Student ID
    Format: SDYYYYMMXXXX
@@ -23,9 +24,26 @@ const generateStudentId = async () => {
     nextNumber = parseInt(lastId.slice(-4)) + 1;
   }
 
-  return `SD${year}${String(nextNumber).padStart(4, "0")}`;
+  return `SD${year}${month}${String(nextNumber).padStart(4, "0")}`;
 };
+const generateCode = async () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
 
+  // Prefix: SD + YYYY + MM → 8 characters
+  const prefix = `GD${year}${month}`;
+
+  // Generate 4 random alphanumeric characters (A-Z, 0-9)
+  const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let suffix = "";
+  for (let i = 0; i < 4; i++) {
+    suffix += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+
+  // Final 10-character code
+  return prefix + suffix; // e.g., SD202601K9P2
+};
 /* ============================================================
    HELPER: Generate Guardian Username
 ============================================================ */
@@ -50,7 +68,7 @@ const generatePassword = (firstName, lastName) => {
 ============================================================ */
 export const createStudent = async (req, res) => {
   const connection = await pool.getConnection();
-
+let baseUrl = process.env.SERVER_BASE_URL;
   try {
     const {
       firstName,
@@ -75,12 +93,12 @@ export const createStudent = async (req, res) => {
     // Parse finance safely
     // ==============================
     let financeData = null;
-    let finaanceCartegory = null;
+    let financeId = null; // will map to table column finaanceCartegory
 
     if (finance) {
       try {
         financeData = typeof finance === "string" ? JSON.parse(finance) : finance;
-        finaanceCartegory = financeData?.financeCategoryId || null;
+        financeId = financeData?.financeCategoryId || null;
       } catch {
         throw new AppError("Invalid finance JSON", 400);
       }
@@ -113,23 +131,18 @@ export const createStudent = async (req, res) => {
       exists = check.length > 0;
     }
 
-// ==============================
-// Handle profile image (diskStorage)
-// ==============================
-let profileImage = null;
+    // ==============================
+    // Handle profile image
+    // ==============================
+    let profileImage = null;
+    const file =
+      req.file ||
+      (Array.isArray(req.files) && req.files.length > 0 ? req.files[0] : null);
 
-const file =
-  req.file ||
-  (Array.isArray(req.files) && req.files.length > 0 ? req.files[0] : null);
-
-if (file) {
-  // multer already saved the file
-  // store relative URL in DB
-  profileImage = `/uploads/students/${file.filename}`;
-}
-
-
-
+    if (file) {
+      profileImage = `${baseUrl}/uploads/students/${file.filename}`;
+    }
+console.log(profileImage)
     // ==============================
     // Start transaction
     // ==============================
@@ -167,14 +180,18 @@ if (file) {
         classId || null,
         sectionId || null,
         studentCategoryId || null,
-        finaanceCartegory,
+        financeId,
         previousClassId || null,
         profileImage,
       ]
     );
 
+    // ==============================
+    // Fetch only required student fields
+    // ==============================
     const [student] = await connection.query(
-      "SELECT * FROM student WHERE id=?",
+      `SELECT id, firstName, lastName, createdAt, classId, sectionId, categoryId, finaanceCartegory AS financeId
+       FROM student WHERE id=?`,
       [result.insertId]
     );
 
@@ -185,13 +202,13 @@ if (file) {
 
     for (const g of guardiansArray) {
       if (!g.firstName || !g.lastName) continue;
-
+      const guardianCode = await generateCode(6); // e.g. "GXD4K9"
       const username = generateUsername(g.email, g.firstName, g.lastName);
       const password = generatePassword(g.firstName, g.lastName);
 
       const [guardianResult] = await connection.query(
         `INSERT INTO guardian
-          (
+          ( id,
             studentId,
             firstName,
             lastName,
@@ -203,8 +220,8 @@ if (file) {
             address,
             relation
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
+          VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [guardianCode,
           studentId,
           g.firstName,
           g.lastName,
@@ -219,7 +236,9 @@ if (file) {
       );
 
       const [created] = await connection.query(
-        `SELECT id, firstName, lastName, username, email, relation
+        `SELECT id, firstName, lastName, username, password, email, relation, contact1,
+            contact2,
+            address,
          FROM guardian WHERE id=?`,
         [guardianResult.insertId]
       );
@@ -232,18 +251,168 @@ if (file) {
     // ==============================
     await connection.commit();
 
+    // ==============================
+    // Send response
+    // ==============================
     res.status(201).json({
       success: 1,
       message: "Student and guardians created successfully",
       student: student[0],
       guardians: createdGuardians,
     });
+
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
     connection.release();
   }
+};
+/* ============================================================
+   SEARCH STUDENTS (Class / All Sections via Class Group)
+============================================================ */
+export const searchStudents = async (req, res) => {
+  const { classId, allSection } = req.body;
+
+  if (!classId) {
+    throw new AppError("classId is required", 400);
+  }
+
+  // Normalize boolean
+  const includeAllSections = allSection === "true" || allSection === true;
+
+  let students = [];
+
+  // =====================================================
+  // CASE 1: Single class only
+  // =====================================================
+  if (!includeAllSections) {
+    const [rows] = await pool.query(
+      `
+      SELECT 
+       *
+      FROM student
+      WHERE classId = ?
+        AND isActive = 1
+        AND status = 'CURRENT'
+      ORDER BY createdAt DESC
+      `,
+      [classId]
+    );
+
+    students = rows;
+  }
+
+  // =====================================================
+  // CASE 2: All sections (same classGroupId)
+  // =====================================================
+  else {
+    // 1️⃣ Get classGroupId from provided classId
+    const [classRows] = await pool.query(
+      `SELECT classGroupId FROM class WHERE id = ? LIMIT 1`,
+      [classId]
+    );
+
+    if (!classRows.length || !classRows[0].classGroupId) {
+      throw new AppError("Class group not found for provided classId", 404);
+    }
+
+    const classGroupId = classRows[0].classGroupId;
+
+    // 2️⃣ Get ALL class IDs in the same classGroup
+    const [classIdsRows] = await pool.query(
+      `SELECT id FROM class WHERE classGroupId = ?`,
+      [classGroupId]
+    );
+
+    const classIds = classIdsRows.map(c => c.id);
+
+    if (!classIds.length) {
+      return res.status(200).json({
+        success: 1,
+        message: "No students found",
+        students: [],
+      });
+    }
+
+    // 3️⃣ Fetch students in those classes
+    const [rows] = await pool.query(
+      `
+      SELECT 
+        *
+      FROM student
+      WHERE classId IN (?)
+        AND isActive = 1
+        AND status = 'CURRENT'
+      ORDER BY classId, createdAt DESC
+      `,
+      [classIds]
+    );
+
+    students = rows;
+  }
+
+  res.status(200).json({
+    success: 1,
+    message: "Students fetched successfully",
+    count: students.length,
+    data:students,
+  });
+};
+/* ============================================================
+   GET STUDENT RELATED INFO (GUARDIAN, FINANCE – EXTENSIBLE)
+   Route: GET /api/students/:studentId/related
+============================================================ */
+export const getStudentRelatedInfo = async (req, res) => {
+  const { studentId } = req.params;
+
+  if (!studentId) {
+    throw new AppError("studentId is required", 400);
+  }
+
+  // =====================================================
+  // 1️⃣ Validate student exists (using student.studentId)
+  // =====================================================
+  const [studentRows] = await pool.query(
+    `SELECT id, studentId FROM student WHERE studentId = ? LIMIT 1`,
+    [studentId]
+  );
+
+  if (!studentRows.length) {
+    throw new AppError("Student not found", 404);
+  }
+
+  // =====================================================
+  // 2️⃣ Fetch guardians (1 → many)
+  // =====================================================
+  const [guardians] = await pool.query(
+    `
+    SELECT 
+     *
+    FROM guardian
+    WHERE studentId = ?
+    ORDER BY createdAt ASC
+    `,
+    [studentId]
+  );
+
+  // =====================================================
+  // 3️⃣ Finance (placeholder – future table)
+  // =====================================================
+  // When finance table is added, replace null with query
+  const finance = null;
+
+  // =====================================================
+  // 4️⃣ Response
+  // =====================================================
+  res.status(200).json({
+    success: 1,
+    message: "Student related info fetched successfully",
+    data: {
+      guardian: guardians,   // always array (0..n)
+      finance,
+    },
+  });
 };
 
 
@@ -265,58 +434,220 @@ export const getStudent = async (req, res) => {
    UPDATE STUDENT
 ============================================================ */
 export const updateStudent = async (req, res) => {
-  const {
-    firstName,
-    lastName,
-    otherName,
-    gender,
-    dateOfBirth,
-    religion,
-    classId,
-    sectionId,
-    categoryId,
-    finaanceCartegory,
-    previousClassId,
-    profileImage,
-    status,
-    isActive,
-  } = req.body;
+  const conn = await pool.getConnection();
 
-  const [result] = await pool.query(
-    `UPDATE student SET 
-      firstName=?, lastName=?, otherName=?, gender=?, dateOfBirth=?, religion=?, 
-      classId=?, sectionId=?, categoryId=?, finaanceCartegory=?, previousClassId=?, 
-      profileImage=?, status=?, isActive=?
-     WHERE id=?`,
-    [
+
+  try {
+    await conn.beginTransaction();
+
+    const {
       firstName,
       lastName,
-      otherName || null,
-      gender || null,
-      dateOfBirth || null,
-      religion || null,
-      classId || null,
-      sectionId || null,
-      categoryId || null,
-      finaanceCartegory || null,
-      previousClassId || null,
-      profileImage || null,
-      status || "CURRENT",
-      isActive !== undefined ? isActive : 1,
-      req.params.id,
-    ]
+      otherNames,
+      gender,
+      religion,
+      dateOfBirth,
+      classId,
+      sectionId,
+      studentCategoryId,
+      financeCategoryId,
+      accountBalance,
+      scholarshipId,
+      feeItems,
+      guardians,
+    } = req.body;
+
+    const studentDbId = req.params.id;
+
+    /* ===============================
+       PROFILE IMAGE
+    =============================== */
+    /* ===============================
+   PROFILE IMAGE
+============================== */
+const baseUrl = process.env.SERVER_BASE_URL;
+
+ let profileImage = null;
+
+    const file =
+      req.file ||
+      (Array.isArray(req.files) && req.files.length > 0 ? req.files[0] : null);
+
+    if (file) {
+      profileImage = baseUrl+`/uploads/students/${file.filename}`;
+    }
+console.log(profileImage)
+
+    /* ===============================
+       UPDATE STUDENT
+    =============================== */
+    const [studentResult] = await conn.query(
+      `UPDATE student SET
+        firstName=?,
+        lastName=?,
+        otherName=?,
+        gender=?,
+        religion=?,
+        dateOfBirth=?,
+        classId=?,
+        sectionId=?,
+        categoryId=?,
+        profileImage=COALESCE(?, profileImage)
+       WHERE studentId=?`,
+      [
+        firstName,
+        lastName,
+        otherNames || null,
+        gender,
+        religion,
+        dateOfBirth || null,
+        classId,
+        sectionId,
+        studentCategoryId,
+        profileImage,
+        studentDbId,
+      ]
+    );
+
+    if (!studentResult.affectedRows) {
+      throw new Error("Student not found");
+    }
+
+    /* ===============================
+       UPSERT FINANCE
+    =============================== */
+    // await conn.query(
+    //   `INSERT INTO student_finance
+    //     (studentId, financeCategoryId, scholarshipId, accountBalance, feeItems)
+    //    VALUES (?, ?, ?, ?, ?)
+    //    ON DUPLICATE KEY UPDATE
+    //     financeCategoryId=VALUES(financeCategoryId),
+    //     scholarshipId=VALUES(scholarshipId),
+    //     accountBalance=VALUES(accountBalance),
+    //     feeItems=VALUES(feeItems)`,
+    //   [
+    //     studentDbId,
+    //     financeCategoryId || null,
+    //     scholarshipId || null,
+    //     Number(accountBalance) || 0,
+    //     feeItems || "[]",
+    //   ]
+    // );
+
+    /* ===============================
+       GUARDIANS (REPLACE STRATEGY)
+    =============================== */
+ /* ===============================
+   GUARDIANS: SMART UPSERT (Update existing + Insert new + Delete removed)
+============================== */
+
+const parsedGuardians = JSON.parse(guardians || "[]");
+
+
+
+// Step 1: Collect IDs of guardians that still exist (sent from frontend)
+const incomingGuardianIds = parsedGuardians
+  .filter(g => g.id && !isNaN(g.id))
+  .map(g => g.id);
+
+// Step 2: Delete guardians that were removed in the UI
+if (incomingGuardianIds.length > 0) {
+  await conn.query(
+    `DELETE FROM guardian 
+     WHERE studentId = ? AND id NOT IN (${incomingGuardianIds.map(() => '?').join(',')})`,
+    [studentDbId, ...incomingGuardianIds]
   );
+} else {
+  // No guardians with IDs → user removed all → delete everything
+  await conn.query(`DELETE FROM guardian WHERE studentId = ?`, [studentDbId]);
+}
 
-  if (!result.affectedRows) throw new AppError("Student not found", 404);
+// Step 3: Update existing OR Insert new guardians
+for (const g of parsedGuardians) {
+  if (g.id && !isNaN(g.id)) {
+    // ────── UPDATE existing guardian ──────
+    await conn.query(
+      `UPDATE guardian SET
+         firstName = ?,
+         lastName = ?,
+         email = ?,
+         contact1 = ?,
+         contact2 = ?,
+         address = ?,
+         relation = ?,
+         updatedAt = CURRENT_TIMESTAMP
+       WHERE id = ? AND studentId = ?`,
+      [
+        g.firstName || null,
+        g.lastName || null,
+        g.email || null,
+        g.contact1 || null,
+        g.contact2 || null,
+        g.address || null,
+        g.relation || "Mother",
+        g.id,
+        studentDbId
+      ]
+    );
+  } else {
+    // ────── INSERT new guardian (same as createStudent) ──────
+    if (!g.firstName || !g.lastName) continue; // skip empty
+const guardianCode = await generateCode(6); // e.g. "GXD4K9"
+    const username = generateUsername(g.email, g.firstName);
+    const password = generatePassword(g.firstName,);
 
-  const [student] = await pool.query("SELECT * FROM student WHERE id=?", [req.params.id]);
+    await conn.query(
+      `INSERT INTO guardian
+         (id,studentId, firstName, lastName, email, username, password,
+          contact1, contact2, address, relation, active)
+       VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [guardianCode,
+        studentDbId,
+        g.firstName,
+        g.lastName,
+        g.email || null,
+        username,
+        password,
+        g.contact1 || null,
+        g.contact2 || null,
+        g.address || null,
+        g.relation || "Mother"
+      ]
+    );
+  }
+}
 
-  res.status(200).json({
-    success: 1,
-    message: "Student updated successfully",
-    info: student[0],
-  });
+
+    await conn.commit();
+
+    /* ===============================
+       RETURN UPDATED DATA
+    =============================== */
+    const [[student]] = await conn.query(
+      "SELECT * FROM student WHERE studentId=?",
+      [studentDbId]
+    );
+     const [[guardian]] = await conn.query(
+      "SELECT * FROM guardian WHERE studentId=?",
+      [studentDbId]
+    );
+
+    res.status(200).json({
+      success: 1,
+      message: "Student updated successfully",
+      data:{
+        student,guardian
+      },
+      info: student,
+    });
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 };
+
 
 /* ============================================================
    DELETE STUDENT

@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import requestLogger from "./utils/requestLogger.js";
-
+import { fileURLToPath } from "url";
 //import { fileURLToPath } from "url";
 
 import classListRouter  from "./modules/classlist/classlist.router.js";
@@ -45,6 +45,10 @@ process.on("uncaughtException", (err) => {
 });
 
 
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use("/api/uploads/students", express.static(path.join(__dirname, "../uploads/students")));
 
 
 
