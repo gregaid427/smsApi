@@ -6,9 +6,11 @@ import {
   deleteStudent,
   searchStudents,
   getStudentRelatedInfo,
+  bulkAdmission,
 } from "./student.controller.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { upload } from "../../utils/upload.js";
+import { uploadMultiple } from "../../utils/uploadMultiple.js";
 
 const router = express.Router();
 
@@ -28,6 +30,9 @@ router.get("/:id", asyncHandler(getStudent));
    PATCH /students/:id
 ============================================================ */
 router.patch("/:id", upload.single("profileImage"), asyncHandler(updateStudent));
+
+router.post("/bulk-admission", upload.array("profileImages"), asyncHandler(bulkAdmission));
+
 /* ============================================================
    DELETE STUDENT
    DELETE /students/:id
